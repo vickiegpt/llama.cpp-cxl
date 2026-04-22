@@ -78,6 +78,10 @@
 #include "ggml-cxl.h"
 #endif
 
+#ifdef GGML_USE_LANXIN
+#include "ggml-lanxin.h"
+#endif
+
 #ifdef GGML_USE_CANN
 #include "ggml-cann.h"
 #endif
@@ -141,6 +145,9 @@ struct ggml_backend_registry {
 #endif
 #ifdef GGML_USE_CXL
         register_backend(ggml_backend_cxl_reg());
+#endif
+#ifdef GGML_USE_LANXIN
+        register_backend(ggml_backend_lanxin_reg());
 #endif
 
 #ifdef GGML_USE_OPENCL

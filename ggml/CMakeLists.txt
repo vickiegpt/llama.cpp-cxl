@@ -229,6 +229,7 @@ option(GGML_WEBGPU_GPU_PROFILE              "ggml: enable WebGPU profiling (GPU)
 option(GGML_WEBGPU_JSPI                     "ggml: use JSPI for WebGPU"                       ON)
 option(GGML_ZDNN                            "ggml: use zDNN"                                  OFF)
 option(GGML_CXL                             "ggml: use CXL Type 2 device backend"             OFF)
+option(GGML_LANXIN                         "ggml: use Lanxin PACC backend"                    OFF)
 option(GGML_VIRTGPU                         "ggml: use the VirtGPU/Virglrenderer API Remoting frontend"     OFF)
 option(GGML_VIRTGPU_BACKEND                 "ggml: build the VirtGPU/Virglrenderer API Remoting backend"    OFF)
 option(GGML_METAL                           "ggml: use Metal"                                 ${GGML_METAL_DEFAULT})
@@ -324,6 +325,7 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-metal.h
     include/ggml-rpc.h
     include/ggml-cxl.h
+    include/ggml-lanxin.h
     include/ggml-virtgpu.h
     include/ggml-sycl.h
     include/ggml-vulkan.h
