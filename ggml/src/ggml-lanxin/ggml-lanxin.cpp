@@ -61,25 +61,22 @@ struct PaccKernelBufferBinding {
     uint64_t size;
 };
 
-using fn_hetgpu_pacc_compile_source_to_elf = int (*)(
-        const char * target_arch,
-        const char * source_name,
-        const uint8_t * source_buffer,
-        size_t source_len,
-        const char * working_directory,
-        const char * const * options,
-        size_t option_count,
-        const uint8_t * linked_bitcode,
-        size_t linked_bitcode_len,
-        uint8_t ** out_elf,
-        size_t * out_elf_len);
-using fn_hetgpu_pacc_free_buffer = void (*)(uint8_t * ptr);
-
 using fn_pacc_CreateDevice = pacc_Device * (*)(uint32_t device_id);
 using fn_pacc_DestroyDevice = void (*)(pacc_Device * device);
 using fn_pacc_CreateProgram = pacc_Program * (*)(void);
 using fn_pacc_DestroyProgram = void (*)(pacc_Program * program);
 using fn_pacc_LoadProgram = pacc_Result (*)(pacc_Program * program, const void * data, uint64_t size);
+using fn_pacc_LoadProgramSource = pacc_Result (*)(
+        pacc_Program * program,
+        const char * target_arch,
+        const char * source_name,
+        const uint8_t * source_buffer,
+        uint64_t source_len,
+        const char * working_directory,
+        const char * const * options,
+        size_t option_count,
+        const uint8_t * linked_bitcode,
+        uint64_t linked_bitcode_len);
 using fn_pacc_CreateKernelOnDevice = pacc_Kernel * (*)(pacc_Program * program, pacc_Device * device, const char * name);
 using fn_pacc_DestroyKernel = void (*)(pacc_Kernel * kernel);
 using fn_pacc_KernelClearLaunchState = pacc_Result (*)(pacc_Kernel * kernel);
@@ -88,17 +85,14 @@ using fn_pacc_KernelAddBufferBinding = pacc_Result (*)(pacc_Kernel * kernel, con
 using fn_pacc_LaunchKernel = pacc_Result (*)(pacc_Kernel * kernel, uint32_t grid_x, uint32_t grid_y, uint32_t grid_z, uint32_t block_x, uint32_t block_y, uint32_t block_z);
 
 struct lanxin_runtime_api {
-    void * comgr_handle = nullptr;
     void * runtime_handle = nullptr;
-
-    fn_hetgpu_pacc_compile_source_to_elf compile_source_to_elf = nullptr;
-    fn_hetgpu_pacc_free_buffer free_buffer = nullptr;
 
     fn_pacc_CreateDevice create_device = nullptr;
     fn_pacc_DestroyDevice destroy_device = nullptr;
     fn_pacc_CreateProgram create_program = nullptr;
     fn_pacc_DestroyProgram destroy_program = nullptr;
     fn_pacc_LoadProgram load_program = nullptr;
+    fn_pacc_LoadProgramSource load_program_source = nullptr;
     fn_pacc_CreateKernelOnDevice create_kernel_on_device = nullptr;
     fn_pacc_DestroyKernel destroy_kernel = nullptr;
     fn_pacc_KernelClearLaunchState clear_launch_state = nullptr;
@@ -124,7 +118,6 @@ struct lanxin_device_context {
 
 struct lanxin_module_state {
     std::string source_name;
-    std::vector<uint8_t> elf;
     pacc_Program * program = nullptr;
     std::unordered_map<std::string, pacc_Kernel *> kernels;
 };
@@ -236,32 +229,6 @@ static bool lanxin_probe_locked(lanxin_loader_state & loader) {
 
     loader.probed = true;
 
-    const auto comgr_candidates = lanxin_candidate_paths(
-            "GGML_LANXIN_COMGR_LIB",
-            {
-                "target/debug/libcomgr.so",
-                "target/debug/libcomgr.dylib",
-                "target/release/libcomgr.so",
-                "target/release/libcomgr.dylib",
-            });
-    for (const auto & path : comgr_candidates) {
-        if (!fs::exists(path)) {
-            continue;
-        }
-        loader.api.comgr_handle = lanxin_dlopen(path);
-        if (loader.api.comgr_handle != nullptr) {
-            break;
-        }
-        loader.error = "failed to dlopen ";
-        loader.error += path.string();
-        loader.error += ": ";
-        loader.error += lanxin_dl_error();
-    }
-    if (loader.api.comgr_handle == nullptr && loader.error.empty()) {
-        loader.error = "unable to locate libcomgr for Lanxin backend";
-        return false;
-    }
-
     const auto runtime_candidates = lanxin_candidate_paths(
             "GGML_LANXIN_PACC_LIB",
             {
@@ -290,13 +257,12 @@ static bool lanxin_probe_locked(lanxin_loader_state & loader) {
         return false;
     }
 
-    if (!lanxin_load_symbol(loader.api.comgr_handle, "hetgpu_pacc_compile_source_to_elf", (void **) &loader.api.compile_source_to_elf, loader.error) ||
-        !lanxin_load_symbol(loader.api.comgr_handle, "hetgpu_pacc_free_buffer", (void **) &loader.api.free_buffer, loader.error) ||
-        !lanxin_load_symbol(loader.api.runtime_handle, "pacc_CreateDevice", (void **) &loader.api.create_device, loader.error) ||
+    if (!lanxin_load_symbol(loader.api.runtime_handle, "pacc_CreateDevice", (void **) &loader.api.create_device, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_DestroyDevice", (void **) &loader.api.destroy_device, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_CreateProgram", (void **) &loader.api.create_program, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_DestroyProgram", (void **) &loader.api.destroy_program, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_LoadProgram", (void **) &loader.api.load_program, loader.error) ||
+        !lanxin_load_symbol(loader.api.runtime_handle, "pacc_LoadProgramSource", (void **) &loader.api.load_program_source, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_CreateKernelOnDevice", (void **) &loader.api.create_kernel_on_device, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_DestroyKernel", (void **) &loader.api.destroy_kernel, loader.error) ||
         !lanxin_load_symbol(loader.api.runtime_handle, "pacc_KernelClearLaunchState", (void **) &loader.api.clear_launch_state, loader.error) ||
@@ -459,49 +425,40 @@ static bool lanxin_compile_module(lanxin_module_state & module, const std::strin
         option_ptrs.push_back(option.c_str());
     }
 
-    const fs::path workdir = lanxin_repo_root();
-    uint8_t * elf_ptr = nullptr;
-    size_t elf_len = 0;
     const lanxin_runtime_api & api = lanxin_api();
-    if (api.compile_source_to_elf == nullptr || api.free_buffer == nullptr || api.create_program == nullptr || api.load_program == nullptr) {
+    if (api.create_program == nullptr || api.load_program_source == nullptr) {
         GGML_LOG_ERROR(GGML_LANXIN_LOG "runtime API incomplete while compiling %s\n", source_name.c_str());
         return false;
     }
-    const int rc = api.compile_source_to_elf(
-            "riscv64-linux-gnu",
-            source_name.c_str(),
-            source.data(),
-            source.size(),
-            workdir.string().c_str(),
-            option_ptrs.data(),
-            option_ptrs.size(),
-            linked_bc.empty() ? nullptr : linked_bc.data(),
-            linked_bc.size(),
-            &elf_ptr,
-            &elf_len);
-    if (rc != 0 || elf_ptr == nullptr || elf_len == 0) {
-        if (elf_ptr != nullptr) {
-            api.free_buffer(elf_ptr);
-        }
-        GGML_LOG_ERROR(GGML_LANXIN_LOG "compile_source_to_elf failed for %s\n", source_name.c_str());
-        return false;
-    }
-
-    module.elf.assign(elf_ptr, elf_ptr + elf_len);
-    api.free_buffer(elf_ptr);
+    const fs::path workdir = lanxin_repo_root();
     module.source_name = source_name;
     module.program = api.create_program();
     if (module.program == nullptr) {
         GGML_LOG_ERROR(GGML_LANXIN_LOG "pacc_CreateProgram failed for %s\n", source_name.c_str());
         return false;
     }
-    if (api.load_program(module.program, module.elf.data(), (uint64_t) module.elf.size()) != pacc_Result_Success) {
-        GGML_LOG_ERROR(GGML_LANXIN_LOG "pacc_LoadProgram failed for %s\n", source_name.c_str());
+    const pacc_Result rc = api.load_program_source(
+            module.program,
+            "riscv64-linux-gnu",
+            source_name.c_str(),
+            source.data(),
+            (uint64_t) source.size(),
+            workdir.string().c_str(),
+            option_ptrs.data(),
+            option_ptrs.size(),
+            linked_bc.empty() ? nullptr : linked_bc.data(),
+            (uint64_t) linked_bc.size());
+    if (rc != pacc_Result_Success) {
+        if (api.destroy_program != nullptr && module.program != nullptr) {
+            api.destroy_program(module.program);
+            module.program = nullptr;
+        }
+        GGML_LOG_ERROR(GGML_LANXIN_LOG "pacc_LoadProgramSource failed for %s\n", source_name.c_str());
         return false;
     }
 
     if (lanxin_log_enabled()) {
-        GGML_LOG_INFO(GGML_LANXIN_LOG "compiled %s to %zu-byte ELF\n", source_name.c_str(), module.elf.size());
+        GGML_LOG_INFO(GGML_LANXIN_LOG "compiled and loaded %s via pacc runtime\n", source_name.c_str());
     }
 
     return true;

@@ -1132,9 +1132,24 @@ static bool alloc_tensor_range(struct ggml_context * ctx,
         ggml_backend_buffer_type_t buft, size_t size,
         ggml_backend_buffer_t ** buffers, size_t * n_buffers) {
 
-    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(buft, size);
+    size_t alloc_size = size;
+    const size_t alignment = ggml_backend_buft_get_alignment(buft);
+    if (alignment > 1) {
+        if (alloc_size > SIZE_MAX - alignment) {
+            GGML_LOG_ERROR("%s: %s buffer size %zu cannot reserve alignment headroom %zu\n",
+                    __func__, ggml_backend_buft_name(buft), size, alignment);
+            free_buffers(buffers, n_buffers);
+            return false;
+        }
+
+        // ggml_tallocr_new() may skip bytes at the start when the backend base pointer is not aligned.
+        alloc_size += alignment;
+    }
+
+    ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(buft, alloc_size);
     if (buffer == NULL) {
-        GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n", __func__, ggml_backend_buft_name(buft), size);
+        GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n",
+                __func__, ggml_backend_buft_name(buft), alloc_size);
         free_buffers(buffers, n_buffers);
         return false;
     }
