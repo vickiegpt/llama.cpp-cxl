@@ -27,8 +27,8 @@ struct alignas(64) amx_tile_config {
     uint8_t palette;
     uint8_t start_row;
     uint8_t reserved[14];
-    uint16_t colsb[8];
-    uint8_t rows[8];
+    uint16_t colsb[16];
+    uint8_t rows[16];
 };
 
 std::atomic<uint64_t> g_amx_calls{0};
