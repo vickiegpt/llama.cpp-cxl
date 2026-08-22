@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ggml.h"
-#include "ggml-cpu.h"
+#include "ggml-cpu-impl.h"
 
 #ifdef __cplusplus
 extern "C" {
