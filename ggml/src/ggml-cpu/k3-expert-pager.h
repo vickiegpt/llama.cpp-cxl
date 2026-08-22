@@ -13,6 +13,12 @@ void ggml_k3_expert_pager_prefetch(
         const struct ggml_tensor * experts,
         const struct ggml_tensor * ids);
 
+// The GGUF mapping stays MADV_RANDOM so opening K3 never triggers whole-model
+// readahead. Immediately before a dense weight is consumed, temporarily give
+// only that tensor sequential/WILLNEED advice. Expert tensors are deliberately
+// excluded because their sparse ranges are handled by the router above.
+void ggml_k3_dense_tensor_prefetch(const struct ggml_tensor * tensor);
+
 #ifdef __cplusplus
 }
 #endif

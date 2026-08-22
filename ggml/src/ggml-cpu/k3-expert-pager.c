@@ -88,6 +88,18 @@ static bool pager_tensor_is_k3_expert(const struct ggml_tensor * tensor) {
            (strstr(tensor->name, "_exps") != NULL || strstr(tensor->name, "experts") != NULL);
 }
 
+static bool pager_tensor_is_k3_dense_weight(const struct ggml_tensor * tensor) {
+    if (!tensor || !tensor->data || !tensor->name[0] || pager_tensor_is_k3_expert(tensor)) {
+        return false;
+    }
+    if (strstr(tensor->name, ".weight") == NULL) {
+        return false;
+    }
+    return strncmp(tensor->name, "blk.", 4) == 0 ||
+           strcmp(tensor->name, "token_embd.weight") == 0 ||
+           strcmp(tensor->name, "output.weight") == 0;
+}
+
 #if defined(__linux__)
 static size_t page_size(void) {
     static size_t value;
@@ -443,5 +455,41 @@ void ggml_k3_expert_pager_prefetch(
                 g_pager.io_errors, g_pager.advise_errors, experts->name);
     }
     pthread_mutex_unlock(&g_pager.mutex);
+#endif
+}
+
+void ggml_k3_dense_tensor_prefetch(const struct ggml_tensor * tensor) {
+#if !defined(__linux__)
+    (void) tensor;
+#else
+    if (!pager_tensor_is_k3_dense_weight(tensor)) {
+        return;
+    }
+
+    pthread_mutex_lock(&g_pager.mutex);
+    pager_init_locked();
+    const bool enabled = g_pager.enabled;
+    pthread_mutex_unlock(&g_pager.mutex);
+    if (!enabled) {
+        return;
+    }
+
+    uintptr_t begin = 0;
+    size_t length = 0;
+    page_aligned_range(tensor->data, ggml_nbytes(tensor), &begin, &length);
+    if (!length) {
+        return;
+    }
+
+    // MADV_SEQUENTIAL restores clustered fault-around/readahead only for the
+    // active dense tensor. WILLNEED starts I/O while worker setup is finishing.
+    int errors = 0;
+    errors += madvise((void *) begin, length, MADV_SEQUENTIAL) != 0;
+    errors += madvise((void *) begin, length, MADV_WILLNEED) != 0;
+    if (errors) {
+        pthread_mutex_lock(&g_pager.mutex);
+        g_pager.advise_errors += (uint64_t) errors;
+        pthread_mutex_unlock(&g_pager.mutex);
+    }
 #endif
 }
