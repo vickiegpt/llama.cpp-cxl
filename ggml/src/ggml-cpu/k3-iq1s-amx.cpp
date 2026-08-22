@@ -114,7 +114,7 @@ extern "C" bool ggml_k3_iq1s_amx_mul_mat_id(
     const ggml_tensor * weights = dst->src[0];
     const ggml_tensor * input = dst->src[1];
     const ggml_tensor * ids = dst->src[2];
-    if (!enabled() || weights->type != GGML_TYPE_IQ1_S || input->type != GGML_TYPE_F32 ||
+    if (params->use_ref || !enabled() || weights->type != GGML_TYPE_IQ1_S || input->type != GGML_TYPE_F32 ||
         ids->type != GGML_TYPE_I32 || !acquire_tile_permission()) {
         return false;
     }
