@@ -31,6 +31,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/ggml-cpu.cpp
         ggml-cpu/k3-expert-pager.c
         ggml-cpu/k3-expert-pager.h
+        ggml-cpu/k3-iq1s-amx.cpp
+        ggml-cpu/k3-iq1s-amx.h
         ggml-cpu/repack.cpp
         ggml-cpu/repack.h
         ggml-cpu/hbm.cpp
