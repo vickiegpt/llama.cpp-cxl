@@ -1317,7 +1317,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         __func__, load_mode_name);
 
     // build a list of buffer types for the CPU and GPU devices
-    pimpl->cpu_buft_list = make_cpu_buft_list(devices, params.use_extra_bufts, params.no_host);
+    // Generic CPU repacking eagerly converts entire tensors. For K3 this both
+    // defeats expert streaming and can exceed host RAM; routed IQ1_S experts
+    // use the dedicated AMX backend instead.
+    const bool use_extra_bufts = params.use_extra_bufts && arch != LLM_ARCH_KIMI_K3;
+    pimpl->cpu_buft_list = make_cpu_buft_list(devices, use_extra_bufts, params.no_host);
     for (const auto & dev : devices) {
         buft_list_t buft_list = make_gpu_buft_list(dev.dev, split_mode, tensor_split);
         // add CPU buffer types as a fallback
