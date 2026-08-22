@@ -448,8 +448,10 @@ struct llama_mmap::impl {
         int flags = MAP_SHARED;
         if (numa) { prefetch = 0; }
 #ifdef __linux__
-        if (posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL)) {
-            LLAMA_LOG_WARN("warning: posix_fadvise(.., POSIX_FADV_SEQUENTIAL) failed: %s\n",
+        const int advice = prefetch ? POSIX_FADV_SEQUENTIAL : POSIX_FADV_RANDOM;
+        if (posix_fadvise(fd, 0, 0, advice)) {
+            LLAMA_LOG_WARN("warning: posix_fadvise(.., %s) failed: %s\n",
+                    prefetch ? "POSIX_FADV_SEQUENTIAL" : "POSIX_FADV_RANDOM",
                     strerror(errno));
         }
         if (prefetch) { flags |= MAP_POPULATE; }
@@ -465,7 +467,7 @@ struct llama_mmap::impl {
                         strerror(errno));
             }
         }
-        if (numa) {
+        if (numa || !prefetch) {
             if (posix_madvise(addr, file->size(), POSIX_MADV_RANDOM)) {
                 LLAMA_LOG_WARN("warning: posix_madvise(.., POSIX_MADV_RANDOM) failed: %s\n",
                         strerror(errno));
