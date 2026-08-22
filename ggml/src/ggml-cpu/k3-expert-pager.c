@@ -403,7 +403,6 @@ void ggml_k3_expert_pager_prefetch(
     ++g_pager.calls;
     const uint64_t current_stamp = ++g_pager.stamp;
     g_pager.selected_experts += selected_count;
-    g_pager.requested_bytes += selected_count * experts->nb[2];
     if (g_pager.cxl_ready) {
         struct pager_region * current = register_region_locked(experts);
         if (current) {
@@ -412,6 +411,7 @@ void ggml_k3_expert_pager_prefetch(
                 if (strcmp(region->layer, current->layer) != 0 || region->expert_count != expert_count) {
                     continue;
                 }
+                g_pager.requested_bytes += selected_count * region->expert_bytes;
                 for (int64_t expert = 0; expert < expert_count; ++expert) {
                     if (selected[expert]) {
                         ensure_expert_locked(region, expert, current_stamp);
@@ -421,6 +421,7 @@ void ggml_k3_expert_pager_prefetch(
             evict_to_budget_locked(current_stamp);
         }
     } else {
+        g_pager.requested_bytes += selected_count * experts->nb[2];
         prefetch_mmap_locked(experts, selected);
     }
     free(selected);
