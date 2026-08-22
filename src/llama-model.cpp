@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cfloat>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -1576,7 +1577,15 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    ml.init_mappings(true, use_mlock ? &pimpl->mlock_mmaps : nullptr);
+    // Kimi K3 GGUFs are hundreds of GiB and rely on sparse expert activation.
+    // MAP_POPULATE would synchronously read every expert before the first token,
+    // defeating both mmap demand paging and the route-aware CXL pager.
+    const bool prefetch_mmaps = arch != LLM_ARCH_KIMI_K3 &&
+        std::getenv("LLAMA_DISABLE_MMAP_PREFETCH") == nullptr;
+    if (!prefetch_mmaps) {
+        LLAMA_LOG_INFO("%s: mmap population disabled for SSD-streamed model\n", __func__);
+    }
+    ml.init_mappings(prefetch_mmaps, use_mlock ? &pimpl->mlock_mmaps : nullptr);
     pimpl->mappings.reserve(ml.mappings.size());
 
     // create the backend buffers

@@ -22,7 +22,7 @@ common=(
     -tb "${K3_BATCH_THREADS:-16}"
     --no-warmup
     --no-display-prompt
-    --no-conversation
+    --single-turn
 )
 
 if [[ -n ${K3_RPC_ARGS:-} ]]; then
