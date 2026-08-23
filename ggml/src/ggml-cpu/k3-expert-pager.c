@@ -360,11 +360,17 @@ static bool ensure_expert_locked(struct pager_region * region, int64_t expert, u
     void * destination = (char *) region->shadow + index * region->expert_bytes;
     void * source = (char *) region->source + index * region->expert_bytes;
     const uint64_t address = region->cxl_base + index * region->expert_bytes;
+    bool populated_from_source = false;
     if (!region->stored[index]) {
         if (g_pager.client_write(g_pager.client, address, source, region->expert_bytes) != 0) {
             ++g_pager.io_errors;
             return false;
         }
+        // A miss has already faulted the source expert from the GGUF. Use those
+        // bytes directly for this request instead of paying for an immediate
+        // CXL readback of the exact payload we just persisted.
+        memcpy(destination, source, region->expert_bytes);
+        populated_from_source = true;
         region->stored[index] = true;
         g_pager.cxl_write_bytes += region->expert_bytes;
         uint8_t stored_byte = 0;
@@ -385,13 +391,15 @@ static bool ensure_expert_locked(struct pager_region * region, int64_t expert, u
             ++g_pager.advise_errors;
         }
     }
-    if (g_pager.client_read(g_pager.client, address, destination, region->expert_bytes) != 0) {
-        ++g_pager.io_errors;
-        return false;
+    if (!populated_from_source) {
+        if (g_pager.client_read(g_pager.client, address, destination, region->expert_bytes) != 0) {
+            ++g_pager.io_errors;
+            return false;
+        }
+        g_pager.cxl_read_bytes += region->expert_bytes;
     }
     region->resident[index] = true;
     g_pager.resident_bytes += region->expert_bytes;
-    g_pager.cxl_read_bytes += region->expert_bytes;
     return true;
 }
 
