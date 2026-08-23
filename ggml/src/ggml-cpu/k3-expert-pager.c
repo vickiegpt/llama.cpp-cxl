@@ -36,7 +36,7 @@ struct pager_region {
 };
 
 #define K3_PAGER_HEADER_BYTES 4096U
-#define K3_PAGER_MAX_PERSISTED_EXPERTS 512U
+#define K3_PAGER_MAX_PERSISTED_EXPERTS 1024U
 #define K3_PAGER_MAGIC UINT64_C(0x4b33455850524731)
 
 struct pager_disk_header {
