@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,10 +28,25 @@ struct pager_region {
     size_t expert_bytes;
     int64_t expert_count;
     uint64_t cxl_base;
+    uint64_t cxl_header;
     char layer[64];
     bool * stored;
     bool * resident;
     uint64_t * stamps;
+};
+
+#define K3_PAGER_HEADER_BYTES 4096U
+#define K3_PAGER_MAX_PERSISTED_EXPERTS 512U
+#define K3_PAGER_MAGIC UINT64_C(0x4b33455850524731)
+
+struct pager_disk_header {
+    uint64_t magic;
+    uint64_t version;
+    uint64_t tensor_hash;
+    uint64_t tensor_bytes;
+    uint64_t expert_bytes;
+    uint64_t expert_count;
+    uint8_t stored[K3_PAGER_MAX_PERSISTED_EXPERTS / 8];
 };
 
 struct pager_state {
@@ -78,6 +94,15 @@ static uint64_t parse_u64_env(const char * name, uint64_t fallback) {
     errno = 0;
     const unsigned long long parsed = strtoull(value, &end, 10);
     return errno == 0 && end && *end == '\0' ? (uint64_t) parsed : fallback;
+}
+
+static uint64_t tensor_name_hash(const char * name) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (const unsigned char * current = (const unsigned char *) name; *current; ++current) {
+        hash ^= *current;
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
 }
 
 static bool pager_tensor_is_k3_expert(const struct ggml_tensor * tensor) {
@@ -239,8 +264,9 @@ static struct pager_region * register_region_locked(const struct ggml_tensor * t
 
     const size_t bytes = ggml_nbytes(tensor);
     const uint64_t aligned_bytes = (bytes + page_size() - 1) & ~(uint64_t) (page_size() - 1);
+    const uint64_t allocation_bytes = K3_PAGER_HEADER_BYTES + aligned_bytes;
     if (g_pager.next_cxl_address > g_pager.cxl_limit ||
-        aligned_bytes > g_pager.cxl_limit - g_pager.next_cxl_address) {
+        allocation_bytes > g_pager.cxl_limit - g_pager.next_cxl_address) {
         fprintf(stderr, "K3_EXPERT_PAGER_ERROR CXL address space exhausted tensor=%s bytes=%zu\n",
                 tensor->name, bytes);
         ++g_pager.io_errors;
@@ -264,6 +290,37 @@ static struct pager_region * register_region_locked(const struct ggml_tensor * t
         return NULL;
     }
 
+    const uint64_t header_address = g_pager.next_cxl_address;
+    const uint64_t data_address = header_address + K3_PAGER_HEADER_BYTES;
+    uint64_t disk_header_words[K3_PAGER_HEADER_BYTES / sizeof(uint64_t)] = { 0 };
+    uint8_t * disk_header_bytes = (uint8_t *) disk_header_words;
+    struct pager_disk_header * disk_header = (struct pager_disk_header *) disk_header_words;
+    const uint64_t name_hash = tensor_name_hash(tensor->name);
+    bool header_valid = g_pager.client_read(
+            g_pager.client, header_address, disk_header_bytes, sizeof(disk_header_words)) == 0 &&
+        disk_header->magic == K3_PAGER_MAGIC && disk_header->version == 1 &&
+        disk_header->tensor_hash == name_hash && disk_header->tensor_bytes == bytes &&
+        disk_header->expert_bytes == tensor->nb[2] && disk_header->expert_count == (uint64_t) tensor->ne[2];
+    size_t persisted_count = 0;
+    if (header_valid && tensor->ne[2] <= K3_PAGER_MAX_PERSISTED_EXPERTS) {
+        for (size_t index = 0; index < count; ++index) {
+            stored[index] = (disk_header->stored[index / 8] & (uint8_t) (1U << (index % 8))) != 0;
+            persisted_count += stored[index] ? 1 : 0;
+        }
+    } else {
+        memset(disk_header_bytes, 0, sizeof(disk_header_words));
+        disk_header->magic = K3_PAGER_MAGIC;
+        disk_header->version = 1;
+        disk_header->tensor_hash = name_hash;
+        disk_header->tensor_bytes = bytes;
+        disk_header->expert_bytes = tensor->nb[2];
+        disk_header->expert_count = (uint64_t) tensor->ne[2];
+        if (g_pager.client_write(
+                g_pager.client, header_address, disk_header_bytes, sizeof(disk_header_words)) != 0) {
+            ++g_pager.io_errors;
+        }
+    }
+
     struct pager_region * region = &g_pager.regions[g_pager.region_count++];
     *region = (struct pager_region) {
         .tensor = (struct ggml_tensor *) tensor,
@@ -272,18 +329,20 @@ static struct pager_region * register_region_locked(const struct ggml_tensor * t
         .bytes = bytes,
         .expert_bytes = tensor->nb[2],
         .expert_count = tensor->ne[2],
-        .cxl_base = g_pager.next_cxl_address,
+        .cxl_base = data_address,
+        .cxl_header = header_address,
         .stored = stored,
         .resident = resident,
         .stamps = stamps,
     };
     extract_layer_name(tensor->name, region->layer, sizeof(region->layer));
-    g_pager.next_cxl_address += aligned_bytes;
+    g_pager.next_cxl_address += allocation_bytes;
     region->tensor->data = shadow;
     fprintf(stderr,
-            "K3_EXPERT_PAGER_MAP tensor=%s experts=%" PRId64 " expert_mib=%.3f cxl_base=%" PRIu64 "\n",
+            "K3_EXPERT_PAGER_MAP tensor=%s experts=%" PRId64
+            " expert_mib=%.3f cxl_base=%" PRIu64 " persisted=%zu\n",
             tensor->name, region->expert_count,
-            (double) region->expert_bytes / 1024.0 / 1024.0, region->cxl_base);
+            (double) region->expert_bytes / 1024.0 / 1024.0, region->cxl_base, persisted_count);
     return region;
 }
 
@@ -308,6 +367,17 @@ static bool ensure_expert_locked(struct pager_region * region, int64_t expert, u
         }
         region->stored[index] = true;
         g_pager.cxl_write_bytes += region->expert_bytes;
+        uint8_t stored_byte = 0;
+        const size_t byte_index = index / 8;
+        const size_t first = byte_index * 8;
+        for (size_t bit = 0; bit < 8 && first + bit < (size_t) region->expert_count; ++bit) {
+            stored_byte |= region->stored[first + bit] ? (uint8_t) (1U << bit) : 0;
+        }
+        const uint64_t bitmap_address = region->cxl_header +
+            offsetof(struct pager_disk_header, stored) + byte_index;
+        if (g_pager.client_write(g_pager.client, bitmap_address, &stored_byte, 1) != 0) {
+            ++g_pager.io_errors;
+        }
         uintptr_t source_begin = 0;
         size_t source_length = 0;
         interior_page_range(source, region->expert_bytes, &source_begin, &source_length);
